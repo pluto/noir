@@ -228,6 +228,7 @@ impl From<TypeCheckError> for Diagnostic {
                     Source::Comparison => format!("Unsupported types for comparison: {expected} and {actual}"),
                     Source::BinOp(kind) => format!("Unsupported types for operator `{kind}`: {expected} and {actual}"),
                     Source::Return(ret_ty, expr_span) => {
+                        println!("ret_ty={:?}, expr_span={:?}", ret_ty, expr_span);
                         let ret_ty_span = match ret_ty.clone() {
                             FunctionReturnType::Default(span) => span,
                             FunctionReturnType::Ty(ty) => ty.span.unwrap(),

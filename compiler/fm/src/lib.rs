@@ -68,6 +68,7 @@ impl FileManager {
         }
 
         // Otherwise we add the file
+        println!("resolved_path={:?}", resolved_path);
         let source = file_reader::read_file_to_string(&resolved_path, &self.file_reader).ok()?;
         let file_id = self.file_map.add_file(resolved_path.clone().into(), source);
         self.register_path(file_id, resolved_path);

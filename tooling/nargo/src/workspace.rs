@@ -14,7 +14,7 @@ use crate::{
     package::Package,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Workspace {
     pub root_dir: PathBuf,
     pub members: Vec<Package>,

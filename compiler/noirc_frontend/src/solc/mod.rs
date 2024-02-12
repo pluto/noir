@@ -1,13 +1,8 @@
-use std::path::Path;
+use std::{ops::Deref, path::Path};
 
 use crate::{
-    ast, graph::CrateId, hir::def_map::Visibility, parser::SortedModule, AssignStatement,
-    BlockExpression, CallExpression, CastExpression, Expression as NoirExpression, ExpressionKind,
-    ForLoopStatement, ForRange, FunctionDefinition as NoirFunctionDefinition, FunctionReturnType,
-    Ident as NoirIdent, IfExpression, IndexExpression, InfixExpression, LValue, LetStatement,
-    Literal, MemberAccessExpression, MethodCallExpression, NoirFunction, Path as NoirPath, Pattern,
-    PrefixExpression, Statement as NoirStatement, StatementKind, UnaryOp, UnresolvedType,
-    UnresolvedTypeData,
+    ast, graph::CrateId, hir::def_map::Visibility, monomorphization::ast::Function, parser::SortedModule, AssignStatement, BlockExpression, CallExpression, CastExpression, Expression as NoirExpression, ExpressionKind, ForLoopStatement, ForRange, FunctionDefinition as NoirFunctionDefinition, FunctionReturnType, Ident as NoirIdent, IfExpression, IndexExpression, InfixExpression, LValue, LetStatement, Literal, MemberAccessExpression, MethodCallExpression, NoirFunction, Path as NoirPath, Pattern, PrefixExpression, Statement as NoirStatement, StatementKind, UnaryOp, UnresolvedType, UnresolvedTypeData,
+    ConstructorExpression
 };
 use acvm::FieldElement;
 use fm::{FileId, FileManager};
@@ -36,6 +31,10 @@ pub fn parse_sol(text: &str) -> SortedModule {
 
     let mut ast = SortedModule::default();
 
+    // Janky add builtins
+    // let mut builtins = generate_builtins();
+    // ast.functions.append(&mut builtins);
+
     for part in &tree.0 {
         match part {
             SourceUnitPart::ContractDefinition(def) => {
@@ -54,6 +53,35 @@ pub fn parse_sol(text: &str) -> SortedModule {
     }
 
     ast
+}
+
+fn generate_builtins() -> Vec<NoirFunction> {
+    let functions = vec!["keccak256"];
+
+    let mut results = vec![];
+    for i in functions.iter() {
+        // TODO: remove unwrap
+        let name_ident = NoirIdent::new(i.to_string(), Span::default());
+        let params = Vec::new();
+
+        // TODO: Add per function, use the correct types
+        // How can we make this actually correct?
+        let return_type = make_type(UnresolvedTypeData::FieldElement);
+        let return_type = FunctionReturnType::Ty(return_type);
+
+        let mut noir_function = NoirFunctionDefinition::normal(
+            &name_ident,
+            &params,
+            &Vec::new(),
+            &BlockExpression(Vec::new()),
+            &Vec::new(),
+            &return_type,
+        );
+        noir_function.return_visibility = ast::Visibility::Public;
+        results.push(NoirFunction::normal(noir_function));
+    }
+
+    return results
 }
 
 fn transform_function(sol_function: &SolFunction) -> NoirFunction {
@@ -166,10 +194,10 @@ fn resolve_statement(sol_body: SolStatement) -> Vec<NoirStatement> {
             // We want to get the name out of this - TODO: the type
             let (init_name, starting_value) = get_name_and_value_from_sol_for_loop_init(initialise);
             let init_ident = make_ident(init_name.as_str());
-            let end_number = get_end_condition_from_sol_for_loop_end(end_condition);
+            let end_number = get_end_via_expression(end_condition);
 
             let start_number = make_numeric_literal(starting_value);
-            let end_number = make_numeric_literal(end_number);
+            // let end_number = make_numeric_literal(end_number);
 
             let inner_body = resolve_statement(*body.expect("For loop must have a body"));
             // dbg!(_between_condition); TODO: work with the between condition
@@ -203,10 +231,36 @@ fn get_name_and_value_from_sol_for_loop_init(
     }
 }
 
+
+fn get_end_via_expression(end_condition: Option<Box<SolExpression>>) -> NoirExpression {
+    let end = end_condition.expect("In solnoir you must initialise a variable in your for loop");
+
+    match end.as_ref() {
+        SolExpression::Less(_, _, num) => {
+            println!("Matched num: {:?}", num);
+            let e = num.as_ref().clone();
+            let noir_expr = resolve_expression(e);
+            return noir_expr;
+            // variable( ident (proof), ident(length)) 
+            // How to translate this? 
+
+            // return match num.as_ref() {
+            //     SolExpression::NumberLiteral(_, val, _, _) => val.clone(),
+            //     _ => panic!("For loop assignments MUST have a value"),
+            // };
+        }
+        _ => panic!("Loop conditionals only implemented for < operator"),
+    }
+}
+
 fn get_end_condition_from_sol_for_loop_end(end_condition: Option<Box<SolExpression>>) -> String {
     let end = end_condition.expect("In solnoir you must initialise a variable in your for loop");
+
+    println!("Loop end {:?}", end);
+
     match end.as_ref() {
         SolExpression::Less(_, _, num) => match num.as_ref() {
+
             SolExpression::NumberLiteral(_, val, _, _) => val.clone(),
             _ => panic!("For loop assignments MUST have a value"),
         },
@@ -320,6 +374,61 @@ fn resolve_expression(sol_expression: SolExpression) -> NoirExpression {
             variable_ident(ident)
         }
 
+        // How to handle array type?
+        SolExpression::MemberAccess(_, expr, ident) => {
+            member_access(expr.to_string().as_str(), ident.to_string().as_str())
+        }
+
+        SolExpression::ArraySubscript(_, ident, Some(rhs)) => {
+            let index = resolve_expression(*rhs);
+            index_array(make_ident(ident.to_string().as_str()), index.to_string().as_str())
+        }
+
+        // TODO: How do I add types for built in functions? 
+        SolExpression::FunctionCall(_, lhs, rhs) => {
+            let expr = resolve_expression(*lhs);
+            let mut args = vec![];
+            for e in rhs {
+                let result = resolve_expression(e);
+                args.push(result);
+            }
+
+            call(expr, args)
+        }
+
+        SolExpression::New(_, lhs) => {
+            // TODO: Extra janking handling of new objects.
+            match lhs.as_ref() {
+                SolExpression::FunctionCall(_, lhs, rhs) => {
+                    // let expr = resolve_expression(lhs.as_ref().clone());
+                    let type_name = ast::Path::from_ident(make_ident(lhs.to_string().as_str()));
+
+                    let mut fields = vec![];
+                    for (i, e) in rhs.iter().enumerate() {
+                        fields.push((make_ident(i.to_string().as_str()), resolve_expression(e.clone())))
+                    }
+
+                    return NoirExpression::new(
+                        ExpressionKind::Constructor(Box::new(ConstructorExpression { type_name, fields })),
+                        Span::default()
+                    )
+                },
+                _ => panic!("Not implemented expression, {lhs}"),
+            }
+        }
+
+        SolExpression::HexNumberLiteral(_, lhs, _) => {
+            expression(ExpressionKind::Literal(Literal::Str(lhs)))
+        }
+
+        SolExpression::HexLiteral(lhs) => {
+            let mut s = String::new();
+            for b in lhs.iter() {
+                s = s + b.hex.as_str();
+            }
+            expression(ExpressionKind::Literal(Literal::Str(s)))
+        }
+
         // TODO: support exp / unit
         // Value is the most common
         // exp is if the number is exponented?
@@ -332,7 +441,7 @@ fn resolve_expression(sol_expression: SolExpression) -> NoirExpression {
             block_expression(vec![var_assignment(lhs, rhs)])
         }
 
-        _ => panic!("Not implemented expression, {sol_expression}"),
+        _ => panic!("Not implemented expression, {:?}", sol_expression),
     }
 }
 

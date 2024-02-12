@@ -91,7 +91,7 @@ pub fn get_package_manifest(current_path: &Path) -> Result<PathBuf, ManifestErro
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct PackageConfig {
+pub struct PackageConfig {
     package: PackageMetadata,
     #[serde(default)]
     dependencies: BTreeMap<String, DependencyConfig>,
@@ -179,7 +179,7 @@ impl PackageConfig {
 /// Contains all the information about a package, as loaded from a `Nargo.toml`.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
-enum Config {
+pub enum Config {
     /// Represents a `Nargo.toml` with package fields.
     Package {
         #[serde(flatten)]
@@ -209,14 +209,14 @@ impl TryFrom<&str> for Config {
 }
 
 /// Tracks the root_dir of a `Nargo.toml` and the contents inside the file.
-struct NargoToml {
-    root_dir: PathBuf,
-    config: Config,
+pub struct NargoToml {
+    pub root_dir: PathBuf,
+    pub config: Config,
 }
 
 #[derive(Default, Debug, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
-struct WorkspaceConfig {
+pub struct WorkspaceConfig {
     /// List of members in this workspace.
     members: Vec<PathBuf>,
     /// Specifies the default crate to interact with in the context (similarly to how we have nargo as the default crate in this repository).
@@ -290,7 +290,7 @@ impl DependencyConfig {
     }
 }
 
-fn toml_to_workspace(
+pub fn toml_to_workspace(
     nargo_toml: NargoToml,
     package_selection: PackageSelection,
 ) -> Result<Workspace, ManifestError> {

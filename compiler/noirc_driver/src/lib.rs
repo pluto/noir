@@ -78,6 +78,7 @@ pub fn prepare_crate(context: &mut Context, file_name: &Path) -> CrateId {
     // let std_file_id = context.file_manager.add_file(&path_to_std_lib_file).unwrap();
     // let std_crate_id = context.crate_graph.add_stdlib(std_file_id);
 
+    println!("filename={:?}", file_name);
     let root_file_id = context.file_manager.add_file(file_name).unwrap();
 
     let root_crate_id = context.crate_graph.add_crate_root(root_file_id);

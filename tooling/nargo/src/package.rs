@@ -23,7 +23,7 @@ impl Display for PackageType {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Dependency {
     Local { package: Package },
     Remote { package: Package },
@@ -43,7 +43,7 @@ impl Dependency {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Package {
     // A semver string which specifies the compiler version required to compile this package
     pub compiler_required_version: Option<String>,

@@ -296,6 +296,7 @@ pub fn toml_to_workspace(
 ) -> Result<Workspace, ManifestError> {
     let workspace = match nargo_toml.config {
         Config::Package { package_config } => {
+            println!(" === DEBUG(noir): package_config={:?}", package_config);
             let member = package_config.resolve_to_package(&nargo_toml.root_dir)?;
             match &package_selection {
                 PackageSelection::Selected(selected_name) if selected_name != &member.name => {
@@ -359,7 +360,7 @@ pub fn toml_to_workspace(
     Ok(workspace)
 }
 
-fn read_toml(toml_path: &Path) -> Result<NargoToml, ManifestError> {
+pub fn read_toml(toml_path: &Path) -> Result<NargoToml, ManifestError> {
     let toml_path = toml_path.normalize();
     let toml_as_string = std::fs::read_to_string(&toml_path)
         .map_err(|_| ManifestError::ReadFailed(toml_path.to_path_buf()))?;

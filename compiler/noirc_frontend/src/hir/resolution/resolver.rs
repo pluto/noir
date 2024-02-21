@@ -252,10 +252,10 @@ impl<'a> Resolver<'a> {
         warn_if_unused: bool,
         definition: DefinitionKind,
     ) -> HirIdent {
+        println!("===DEBUG(noir): ADDING VARIABLE ident={:?}, defn={:?}", name.0.contents, definition);
         if definition.is_global() {
             return self.add_global_variable_decl(name, definition);
         }
-
         let id = self.interner.push_definition(name.0.contents.clone(), mutable, definition);
         let location = Location::new(name.span(), self.file);
         let ident = HirIdent { location, id };
@@ -336,14 +336,23 @@ impl<'a> Resolver<'a> {
     fn find_variable(&mut self, name: &Ident) -> Result<(HirIdent, usize), ResolverError> {
         // Find the definition for this Ident
         let scope_tree = self.scopes.current_scope_tree();
+
+        // 
+
+        println!("=== DEBUG(noir): START SEARCHING");    
+        for s in scope_tree.0.iter() {
+            println!(" scope={:?}", s.0);
+        }
         let variable = scope_tree.find(&name.0.contents);
 
+        println!("=== DEBUG(noir): SEARCHING FOR VARIABLE name={:?}", name);
         let location = Location::new(name.span(), self.file);
         if let Some((variable_found, scope)) = variable {
             variable_found.num_times_used += 1;
             let id = variable_found.ident.id;
             Ok((HirIdent { location, id }, scope))
         } else {
+            println!("=== DEBUG(noir): UNABLE TO FIND VARIABLE name={:?}", name);
             Err(ResolverError::VariableNotDeclared {
                 name: name.0.contents.clone(),
                 span: name.0.span(),

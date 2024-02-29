@@ -1,7 +1,11 @@
 #![allow(clippy::single_match)]
 
 use std::{ops::Deref, path::Path};
+use std::collections::HashMap;
+use std::env::args;
+use std::fs::rename;
 use std::ptr::replace;
+use std::thread::current;
 
 use crate::{ast, graph::CrateId, hir::def_map::Visibility, monomorphization::ast::Function, parser::SortedModule, AssignStatement, BlockExpression, CallExpression, CastExpression, ConstructorExpression, Expression as NoirExpression, ExpressionKind, ForLoopStatement, ForRange, FunctionDefinition as NoirFunctionDefinition, FunctionReturnType, Ident as NoirIdent, IfExpression, IndexExpression, InfixExpression, LValue, LetStatement, Literal, MemberAccessExpression, MethodCallExpression, NoirFunction, NoirStruct, NoirTypeAlias, Path as NoirPath, Pattern, PrefixExpression, Signedness, Statement as NoirStatement, StatementKind, UnaryOp, UnresolvedType, UnresolvedTypeData, UnresolvedTypeExpression, FunctionDefinition};
 use acvm::FieldElement;
@@ -15,7 +19,7 @@ use solang_parser::{
         Statement as SolStatement, StructDefinition, Type,
     },
 };
-use solang_parser::pt::{CatchClause, FunctionTy, Statement};
+use solang_parser::pt::{CatchClause, Expression, FunctionAttribute, FunctionTy, Identifier, Parameter, Statement};
 use solang_parser::pt::Expression::Variable;
 
 use crate::{parser::ParserError, BinaryOpKind};
@@ -253,13 +257,54 @@ fn transform_function(
     globals: &Vec<LetStatement>,
     modifiers: &Vec<solang_parser::pt::FunctionDefinition>,
 ) -> NoirFunction {
+    /* Mapping of modifier name => function param name */
+    /*
+    function main(a) num(a) {}
+
+    modifier num(number) {}
+
+
+    produces:
+
+    num -> [a]
+    */
+    let mut param_map: HashMap<String, Vec<String>> = HashMap::new();
+    for attribute in &sol_function.attributes {
+        match attribute {
+            FunctionAttribute::BaseOrModifier(_, modi) => {
+                if let Some(args) = &modi.args {
+                    param_map.insert(modi.name.identifiers[0].name.clone(), args.iter().filter_map(|expr| {
+                        match expr {
+                            Variable(id) => Some(id.name.clone()),
+                            _ => None
+                        }
+                    }).collect());
+                }
+            }
+            _ => {}
+        }
+    }
+    dbg!(&param_map);
     let params = transform_parameters(&sol_function.params);
     let mut mods_with_fn = modifiers.clone();
     mods_with_fn.push(sol_function.clone());
-    let final_modifier = mods_with_fn.iter().skip(1).fold(modifiers[0].clone(), |mut fin, current| {
+    let final_modifier = mods_with_fn.iter().rev().skip(1).rev().fold(modifiers[0].clone(), |mut fin, mut current| {
+        let mut body = current.body.clone().unwrap();
+        if current.ty == FunctionTy::Modifier {
+            let vars_to_rename: Vec<String> = current.params.iter().filter_map(|(_, param)| {
+                if let Some(param) = &param {
+                    return param.name.as_ref().map(|a| a.name.clone());
+                }
+                None
+            }).collect();
+
+            let mapping: HashMap<_, _> = vars_to_rename.iter().zip(param_map.get(&current.name.as_ref().unwrap().name).unwrap().into_iter().clone()).collect();
+            rename_variables_in_modifier(&mut body, &mapping);
+        }
+
         /* Find the _; part of the final modifier and replace it with the current modifier */
         let mut new_body = fin.body.clone().expect("Empty modifier");
-        replace_underscore(&mut new_body, &current.body.clone().unwrap());
+        replace_underscore(&mut new_body, &body);
 
         fin.body = Some(new_body);
         fin
@@ -269,11 +314,6 @@ fn transform_function(
     let body = transform_body(final_modifier.body.clone(), ast, globals);
     println!("{}", body);
     let return_type = transform_return_type(&sol_function.returns.as_ref());
-
-    /* Iterate over modifiers, inserting the next modifier or the function body  */
-
-    /* Recursively fold the modifiers into one function, skipping the first oen */
-
 
     /* If the statement is an underscore, replace it, otherwise return the original statement*/
     fn replace_underscore(original: &mut Statement, replace_with: &Statement) {
@@ -318,7 +358,6 @@ fn transform_function(
                         }
                     }
                 }
-
             }
             Statement::If(_, _, body, else_body) => {
                 replace_underscore(body, replace_with);
@@ -332,6 +371,52 @@ fn transform_function(
     }
 
 
+    fn rename_variables_in_modifier(original: &mut Statement, replace_with: &HashMap<&String, &String>) {
+        match original {
+            /* All of these patterns can contain the _ expr. */
+            Statement::Block { statements, .. } => {
+                for stmt in statements {
+                    rename_variables_in_modifier(stmt, replace_with);
+                }
+            }
+            Statement::Expression(_, exp) => {
+                dbg!(&exp);
+                visit_expr(exp, replace_with);
+            }
+            Statement::While(_, _, body) => {
+                rename_variables_in_modifier(body, replace_with);
+            }
+            Statement::DoWhile(_, body, _) => {
+                rename_variables_in_modifier(body, replace_with);
+            }
+            Statement::For(_, _, _, _, body) => {
+                if let Some(body) = body {
+                    rename_variables_in_modifier(body, replace_with);
+                }
+            }
+            Statement::Try(_, _, Some((_, body)), catch) => {
+                rename_variables_in_modifier(body, replace_with);
+                for catch in catch {
+                    match catch {
+                        CatchClause::Simple(_, _, body) => {
+                            rename_variables_in_modifier(body, replace_with);
+                        }
+                        CatchClause::Named(_, _, _, body) => {
+                            rename_variables_in_modifier(body, replace_with);
+                        }
+                    }
+                }
+            }
+            Statement::If(_, _, body, else_body) => {
+                rename_variables_in_modifier(body, replace_with);
+                if let Some(else_body) = else_body {
+                    rename_variables_in_modifier(else_body, replace_with);
+                }
+            }
+            /* For the rest, we do nothing */
+            _ => {}
+        }
+    }
 
 
     // Ignore generics and trait bounds
@@ -357,6 +442,88 @@ fn transform_function(
     }
 
     NoirFunction::normal(noir_function)
+}
+
+fn visit_expr(exp: &mut Expression, replace_with:  &HashMap<&String, &String>) {
+    match exp {
+        Variable(ident) => {
+            dbg!(&ident);
+            dbg!(&replace_with);
+            if let Some(replace_with) = replace_with.get(&ident.name) {
+                /* GOTEM! */
+                ident.name = (*replace_with).clone();
+            }
+        },
+        Expression::PostIncrement(_, expr) => {
+            visit_expr(expr, replace_with);
+        }
+        Expression::PostDecrement(_, expr) => {
+            visit_expr(expr, replace_with);
+        }
+        Expression::New(_, _) => {}
+        Expression::ArraySubscript(_, _, _) => {}
+        Expression::ArraySlice(_, _, _, _) => {}
+        Expression::Parenthesis(_, _) => {}
+        Expression::MemberAccess(_, _, _) => {}
+        Expression::FunctionCall(_, _, exprs) => {
+            for expr in exprs {
+                visit_expr(expr, replace_with);
+            }
+        }
+        Expression::FunctionCallBlock(_, _, _) => {}
+        Expression::NamedFunctionCall(_, _, _) => {}
+        Expression::Not(_, _) => {}
+        Expression::BitwiseNot(_, _) => {}
+        Expression::Delete(_, _) => {}
+        Expression::PreIncrement(_, _) => {}
+        Expression::PreDecrement(_, _) => {}
+        Expression::UnaryPlus(_, _) => {}
+        Expression::Negate(_, _) => {}
+        Expression::Power(_, _, _) => {}
+        Expression::Multiply(_, _, _) => {}
+        Expression::Divide(_, _, _) => {}
+        Expression::Modulo(_, _, _) => {}
+        Expression::Add(_, _, _) => {}
+        Expression::Subtract(_, _, _) => {}
+        Expression::ShiftLeft(_, _, _) => {}
+        Expression::ShiftRight(_, _, _) => {}
+        Expression::BitwiseAnd(_, _, _) => {}
+        Expression::BitwiseXor(_, _, _) => {}
+        Expression::BitwiseOr(_, _, _) => {}
+        Expression::Less(_, _, _) => {}
+        Expression::More(_, _, _) => {}
+        Expression::LessEqual(_, exp1, exp2) => {
+            visit_expr(exp1, replace_with);
+            visit_expr(exp2, replace_with);
+        }
+        Expression::MoreEqual(_, _, _) => {}
+        Expression::Equal(_, _, _) => {}
+        Expression::NotEqual(_, _, _) => {}
+        Expression::And(_, _, _) => {}
+        Expression::Or(_, _, _) => {}
+        Expression::ConditionalOperator(_, _, _, _) => {}
+        Expression::Assign(_, _, _) => {}
+        Expression::AssignOr(_, _, _) => {}
+        Expression::AssignAnd(_, _, _) => {}
+        Expression::AssignXor(_, _, _) => {}
+        Expression::AssignShiftLeft(_, _, _) => {}
+        Expression::AssignShiftRight(_, _, _) => {}
+        Expression::AssignAdd(_, _, _) => {}
+        Expression::AssignSubtract(_, _, _) => {}
+        Expression::AssignMultiply(_, _, _) => {}
+        Expression::AssignDivide(_, _, _) => {}
+        Expression::AssignModulo(_, _, _) => {}
+        Expression::BoolLiteral(_, _) => {}
+        Expression::NumberLiteral(_, _, _, _) => {}
+        Expression::RationalNumberLiteral(_, _, _, _, _) => {}
+        Expression::HexNumberLiteral(_, _, _) => {}
+        Expression::StringLiteral(_) => {}
+        Expression::Type(_, _) => {}
+        Expression::HexLiteral(_) => {}
+        Expression::AddressLiteral(_, _) => {}
+        Expression::List(_, _) => {}
+        Expression::ArrayLiteral(_, _) => {}
+    }
 }
 
 fn transform_ident(identifier: &SolIdent) -> NoirIdent {

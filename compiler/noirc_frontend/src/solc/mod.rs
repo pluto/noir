@@ -1,15 +1,9 @@
-use std::{ops::Deref, path::Path};
+#![allow(clippy::single_match)]
 
-use crate::{
-    ast, graph::CrateId, hir::def_map::Visibility, monomorphization::ast::Function,
-    parser::SortedModule, AssignStatement, BlockExpression, CallExpression, CastExpression,
-    ConstructorExpression, Expression as NoirExpression, ExpressionKind, ForLoopStatement,
-    ForRange, FunctionDefinition as NoirFunctionDefinition, FunctionReturnType, Ident as NoirIdent,
-    IfExpression, IndexExpression, InfixExpression, LValue, LetStatement, Literal,
-    MemberAccessExpression, MethodCallExpression, NoirFunction, NoirStruct, NoirTypeAlias,
-    Path as NoirPath, Pattern, PrefixExpression, Signedness, Statement as NoirStatement,
-    StatementKind, UnaryOp, UnresolvedType, UnresolvedTypeData, UnresolvedTypeExpression,
-};
+use std::{ops::Deref, path::Path};
+use std::ptr::replace;
+
+use crate::{ast, graph::CrateId, hir::def_map::Visibility, monomorphization::ast::Function, parser::SortedModule, AssignStatement, BlockExpression, CallExpression, CastExpression, ConstructorExpression, Expression as NoirExpression, ExpressionKind, ForLoopStatement, ForRange, FunctionDefinition as NoirFunctionDefinition, FunctionReturnType, Ident as NoirIdent, IfExpression, IndexExpression, InfixExpression, LValue, LetStatement, Literal, MemberAccessExpression, MethodCallExpression, NoirFunction, NoirStruct, NoirTypeAlias, Path as NoirPath, Pattern, PrefixExpression, Signedness, Statement as NoirStatement, StatementKind, UnaryOp, UnresolvedType, UnresolvedTypeData, UnresolvedTypeExpression, FunctionDefinition};
 use acvm::FieldElement;
 use fm::{FileId, FileManager};
 use noirc_errors::{Span, Spanned};
@@ -21,6 +15,8 @@ use solang_parser::{
         Statement as SolStatement, StructDefinition, Type,
     },
 };
+use solang_parser::pt::{CatchClause, FunctionTy, Statement};
+use solang_parser::pt::Expression::Variable;
 
 use crate::{parser::ParserError, BinaryOpKind};
 
@@ -58,11 +54,29 @@ pub fn parse_sol(text: &str) -> SortedModule {
     for part in &tree.0 {
         match part {
             SourceUnitPart::ContractDefinition(def) => {
+                /* Collect all the modifiers in the contract */
+                let mut modifiers: Vec<solang_parser::pt::FunctionDefinition> = vec![];
                 for part in &def.parts {
                     match part {
                         ContractPart::FunctionDefinition(def) => {
-                            let transformed = transform_function(&def, &ast, &globals);
-                            ast.functions.push(transformed);
+                            if def.ty == FunctionTy::Modifier {
+                                modifiers.push(*def.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                for part in &def.parts {
+                    match part {
+                        ContractPart::FunctionDefinition(def) => {
+                            match def.ty {
+                                FunctionTy::Function => {
+                                    let transformed = transform_function(&def, &ast, &globals, &modifiers);
+                                    ast.functions.push(transformed);
+                                }
+                                _ => {}
+                            }
                         }
                         ContractPart::StructDefinition(def) => {
                             let transformed = transform_struct(&def);
@@ -237,12 +251,88 @@ fn transform_function(
     sol_function: &SolFunction,
     ast: &SortedModule,
     globals: &Vec<LetStatement>,
+    modifiers: &Vec<solang_parser::pt::FunctionDefinition>,
 ) -> NoirFunction {
     let params = transform_parameters(&sol_function.params);
+    let mut mods_with_fn = modifiers.clone();
+    mods_with_fn.push(sol_function.clone());
+    let final_modifier = mods_with_fn.iter().skip(1).fold(modifiers[0].clone(), |mut fin, current| {
+        /* Find the _; part of the final modifier and replace it with the current modifier */
+        let mut new_body = fin.body.clone().expect("Empty modifier");
+        replace_underscore(&mut new_body, &current.body.clone().unwrap());
+
+        fin.body = Some(new_body);
+        fin
+    });
 
     // TODO: yeet clone
-    let body = transform_body(sol_function.body.clone(), ast, globals);
+    let body = transform_body(final_modifier.body.clone(), ast, globals);
+    println!("{}", body);
     let return_type = transform_return_type(&sol_function.returns.as_ref());
+
+    /* Iterate over modifiers, inserting the next modifier or the function body  */
+
+    /* Recursively fold the modifiers into one function, skipping the first oen */
+
+
+    /* If the statement is an underscore, replace it, otherwise return the original statement*/
+    fn replace_underscore(original: &mut Statement, replace_with: &Statement) {
+        match original {
+            /* All of these patterns can contain the _ expr. */
+            Statement::Block { statements, .. } => {
+                for stmt in statements {
+                    replace_underscore(stmt, replace_with);
+                }
+            }
+            Statement::Expression(_, exp) => {
+                match exp {
+                    Variable(ident) => {
+                        if (ident.name.eq("_")) {
+                            /* GOTEM! */
+                            *original = replace_with.clone();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Statement::While(_, _, body) => {
+                replace_underscore(body, replace_with);
+            }
+            Statement::DoWhile(_, body, _) => {
+                replace_underscore(body, replace_with);
+            }
+            Statement::For(_, _, _, _, body) => {
+                if let Some(body) = body {
+                    replace_underscore(body, replace_with);
+                }
+            }
+            Statement::Try(_, _, Some((_, body)), catch) => {
+                replace_underscore(body, replace_with);
+                for catch in catch {
+                    match catch {
+                        CatchClause::Simple(_, _, body) => {
+                            replace_underscore(body, replace_with);
+                        }
+                        CatchClause::Named(_, _, _, body) => {
+                            replace_underscore(body, replace_with);
+                        }
+                    }
+                }
+
+            }
+            Statement::If(_, _, body, else_body) => {
+                replace_underscore(body, replace_with);
+                if let Some(else_body) = else_body {
+                    replace_underscore(else_body, replace_with);
+                }
+            }
+            /* For the rest, we do nothing */
+            _ => {}
+        }
+    }
+
+
+
 
     // Ignore generics and trait bounds
     let generics = Vec::new();

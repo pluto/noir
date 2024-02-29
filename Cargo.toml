@@ -1,5 +1,5 @@
 [workspace]
-
+exclude = ["sigaba"]
 members = [
     "compiler/noirc_evaluator",
     "compiler/noirc_frontend",

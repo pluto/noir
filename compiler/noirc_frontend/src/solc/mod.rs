@@ -263,7 +263,6 @@ fn transform_function(
 
     modifier num(number) {}
 
-
     produces:
 
     num -> [a]
@@ -292,7 +291,9 @@ fn transform_function(
     mods_with_fn.push(sol_function.clone());
     let final_modifier = mods_with_fn.iter().rev().skip(1).rev().fold(modifiers[0].clone(), |mut fin, mut current| {
         let mut body = current.body.clone().unwrap();
+        /*TODO: this check won't be necessary because we will only be looping over modifiers here, not the main actual fn */
         if current.ty == FunctionTy::Modifier {
+            /* TODO: investigate using 'scopes' to scope variables instead of prefixing */
             let vars_to_rename: Vec<String> = current.params.iter().filter_map(|(_, param)| {
                 if let Some(param) = &param {
                     return param.name.as_ref().map(|a| a.name.clone());
@@ -308,6 +309,7 @@ fn transform_function(
         let mut new_body = fin.body.clone().expect("Empty modifier");
         replace_underscore(&mut new_body, &body);
 
+        /* Replace the current function body with the new body */
         fin.body = Some(new_body);
         fin
     });
@@ -316,7 +318,7 @@ fn transform_function(
     let body = transform_body(final_modifier.body.clone(), ast, globals);
     let return_type = transform_return_type(&sol_function.returns.as_ref());
 
-    /* If the statement is an underscore, replace it, otherwise return the original statement*/
+    /// If the statement is an underscore, replace it, otherwise return the original statement
     fn replace_underscore(original: &mut Statement, replace_with: &Statement) {
         match original {
             /* All of these patterns can contain the _ expr. */

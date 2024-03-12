@@ -287,6 +287,8 @@ fn transform_function(
     dbg!(&param_map);
     let params = transform_parameters(&sol_function.params);
     let mut mods_with_fn = modifiers.clone();
+
+    /* TODO: don't push function here. do a special treatment of the actual function being inserted instead of treating it like another modifier */
     mods_with_fn.push(sol_function.clone());
     let final_modifier = mods_with_fn.iter().rev().skip(1).rev().fold(modifiers[0].clone(), |mut fin, mut current| {
         let mut body = current.body.clone().unwrap();
@@ -312,7 +314,6 @@ fn transform_function(
 
     // TODO: yeet clone
     let body = transform_body(final_modifier.body.clone(), ast, globals);
-    println!("{}", body);
     let return_type = transform_return_type(&sol_function.returns.as_ref());
 
     /* If the statement is an underscore, replace it, otherwise return the original statement*/
@@ -369,7 +370,6 @@ fn transform_function(
             _ => {}
         }
     }
-
 
     fn rename_variables_in_modifier(original: &mut Statement, replace_with: &HashMap<&String, &String>) {
         match original {
@@ -441,7 +441,9 @@ fn transform_function(
         noir_function.return_visibility = ast::Visibility::Public;
     }
 
-    NoirFunction::normal(noir_function)
+    let func = NoirFunction::normal(noir_function.clone());
+    println!("{}", func);
+    func
 }
 
 fn visit_expr(exp: &mut Expression, replace_with:  &HashMap<&String, &String>) {

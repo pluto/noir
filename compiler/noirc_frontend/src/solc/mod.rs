@@ -283,39 +283,43 @@ fn transform_function(
             _ => {}
         }
     }
-    dbg!(&param_map);
     let params = transform_parameters(&sol_function.params);
-    let mut mods_with_fn = modifiers.clone();
 
-    /* TODO: don't push function here. do a special treatment of the actual function being inserted instead of treating it like another modifier */
-    mods_with_fn.push(sol_function.clone());
-    let final_modifier = mods_with_fn.iter().rev().skip(1).rev().fold(modifiers[0].clone(), |mut fin, mut current| {
-        let mut body = current.body.clone().unwrap();
-        /*TODO: this check won't be necessary because we will only be looping over modifiers here, not the main actual fn */
-        if current.ty == FunctionTy::Modifier {
+    let mut final_modifier_result = modifiers.clone().iter().skip(1).fold(modifiers[0].clone(), |mut final_modifier, mut current_modifier| {
+        let mut current_body = current_modifier.body.clone().unwrap();
+        println!("Current modifier body: {}", current_body);
+        println!("Initial final modifier body: {}", final_modifier.body.clone().unwrap());
+        if current_modifier.ty == FunctionTy::Modifier {
             /* TODO: investigate using 'scopes' to scope variables instead of prefixing */
-            let vars_to_rename: Vec<String> = current.params.iter().filter_map(|(_, param)| {
+            let vars_to_rename: Vec<String> = current_modifier.params.iter().filter_map(|(_, param)| {
                 if let Some(param) = &param {
                     return param.name.as_ref().map(|a| a.name.clone());
                 }
                 None
             }).collect();
 
-            let mapping: HashMap<_, _> = vars_to_rename.iter().zip(param_map.get(&current.name.as_ref().unwrap().name).unwrap().into_iter().clone()).collect();
-            rename_variables_in_modifier(&mut body, &mapping);
+            let mapping: HashMap<_, _> = vars_to_rename.iter().zip(param_map.get(&current_modifier.name.as_ref().unwrap().name).unwrap().into_iter().clone()).collect();
+            rename_variables_in_modifier(&mut current_body, &mapping);
         }
 
         /* Find the _; part of the final modifier and replace it with the current modifier */
-        let mut new_body = fin.body.clone().expect("Empty modifier");
-        replace_underscore(&mut new_body, &body);
+        let mut new_body = final_modifier.body.clone().expect("Empty modifier");
+        replace_underscore(&mut new_body, &current_body);
+        println!("New body: {}", new_body);
 
-        /* Replace the current function body with the new body */
-        fin.body = Some(new_body);
-        fin
+        /* Replace the final modifier body with the new body */
+        final_modifier.body = Some(new_body);
+        final_modifier
     });
 
+    let mut final_body = final_modifier_result.body.unwrap();
+
+    replace_underscore(&mut final_body, &sol_function.body.clone().unwrap());
+
+    final_modifier_result.body = Some(final_body);
+
     // TODO: yeet clone
-    let body = transform_body(final_modifier.body.clone(), ast, globals);
+    let body = transform_body(final_modifier_result.body, ast, globals);
     let return_type = transform_return_type(&sol_function.returns.as_ref());
 
     /// If the statement is an underscore, replace it, otherwise return the original statement
@@ -382,7 +386,6 @@ fn transform_function(
                 }
             }
             Statement::Expression(_, exp) => {
-                dbg!(&exp);
                 visit_expr(exp, replace_with);
             }
             Statement::While(_, _, body) => {
@@ -420,7 +423,6 @@ fn transform_function(
         }
     }
 
-
     // Ignore generics and trait bounds
     let generics = Vec::new();
     let trait_bounds = Vec::new();
@@ -451,8 +453,6 @@ fn transform_function(
 fn visit_expr(exp: &mut Expression, replace_with:  &HashMap<&String, &String>) {
     match exp {
         Variable(ident) => {
-            dbg!(&ident);
-            dbg!(&replace_with);
             if let Some(replace_with) = replace_with.get(&ident.name) {
                 /* GOTEM! */
                 ident.name = (*replace_with).clone();

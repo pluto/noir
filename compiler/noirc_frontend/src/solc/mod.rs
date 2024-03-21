@@ -289,8 +289,22 @@ fn transform_function(
         let mut current_body = current_modifier.body.clone().unwrap();
         println!("Current modifier body: {}", current_body);
         println!("Initial final modifier body: {}", final_modifier.body.clone().unwrap());
+
+        /* Single pass to rename the initial modifiers params */
+        if (final_modifier.eq(&modifiers[0].clone())) {
+            println!("Initial modifier rename");
+            let vars_to_rename: Vec<String> = final_modifier.params.iter().filter_map(|(_, param)| {
+                if let Some(param) = &param {
+                    return param.name.as_ref().map(|a| a.name.clone());
+                }
+                None
+            }).collect();
+
+            let mapping: HashMap<_, _> = vars_to_rename.iter().zip(param_map.get(&final_modifier.name.as_ref().unwrap().name).unwrap().into_iter().clone()).collect();
+            rename_variables_in_modifier(&mut final_modifier.body.as_mut().unwrap(), &mapping, &final_modifier.name.clone().unwrap().name);
+        }
+
         if current_modifier.ty == FunctionTy::Modifier {
-            /* TODO: investigate using 'scopes' to scope variables instead of prefixing */
             let vars_to_rename: Vec<String> = current_modifier.params.iter().filter_map(|(_, param)| {
                 if let Some(param) = &param {
                     return param.name.as_ref().map(|a| a.name.clone());
@@ -299,7 +313,7 @@ fn transform_function(
             }).collect();
 
             let mapping: HashMap<_, _> = vars_to_rename.iter().zip(param_map.get(&current_modifier.name.as_ref().unwrap().name).unwrap().into_iter().clone()).collect();
-            rename_variables_in_modifier(&mut current_body, &mapping);
+            rename_variables_in_modifier(&mut current_body, &mapping, &current_modifier.name.clone().unwrap().name);
         }
 
         /* Find the _; part of the final modifier and replace it with the current modifier */
@@ -377,45 +391,46 @@ fn transform_function(
         }
     }
 
-    fn rename_variables_in_modifier(original: &mut Statement, replace_with: &HashMap<&String, &String>) {
+    /** This function resolves parameter uses in modifiers to their respective argument value.
+                If a modifier has an `amount` parameter that is then passed the `count` argument from the function the modifier is used on, all usages of the `amount` parameter will be renamed to `count` */
+    fn rename_variables_in_modifier(original: &mut Statement, replace_with: &HashMap<&String, &String>, scope: &str) {
         match original {
-            /* All of these patterns can contain the _ expr. */
             Statement::Block { statements, .. } => {
                 for stmt in statements {
-                    rename_variables_in_modifier(stmt, replace_with);
+                    rename_variables_in_modifier(stmt, replace_with, scope);
                 }
             }
             Statement::Expression(_, exp) => {
-                visit_expr(exp, replace_with);
+                visit_expr(exp, replace_with, scope);
             }
             Statement::While(_, _, body) => {
-                rename_variables_in_modifier(body, replace_with);
+                rename_variables_in_modifier(body, replace_with, scope);
             }
             Statement::DoWhile(_, body, _) => {
-                rename_variables_in_modifier(body, replace_with);
+                rename_variables_in_modifier(body, replace_with, scope);
             }
             Statement::For(_, _, _, _, body) => {
                 if let Some(body) = body {
-                    rename_variables_in_modifier(body, replace_with);
+                    rename_variables_in_modifier(body, replace_with, scope);
                 }
             }
             Statement::Try(_, _, Some((_, body)), catch) => {
-                rename_variables_in_modifier(body, replace_with);
+                rename_variables_in_modifier(body, replace_with, scope);
                 for catch in catch {
                     match catch {
                         CatchClause::Simple(_, _, body) => {
-                            rename_variables_in_modifier(body, replace_with);
+                            rename_variables_in_modifier(body, replace_with, scope);
                         }
                         CatchClause::Named(_, _, _, body) => {
-                            rename_variables_in_modifier(body, replace_with);
+                            rename_variables_in_modifier(body, replace_with, scope);
                         }
                     }
                 }
             }
             Statement::If(_, _, body, else_body) => {
-                rename_variables_in_modifier(body, replace_with);
+                rename_variables_in_modifier(body, replace_with, scope);
                 if let Some(else_body) = else_body {
-                    rename_variables_in_modifier(else_body, replace_with);
+                    rename_variables_in_modifier(else_body, replace_with, scope);
                 }
             }
             /* For the rest, we do nothing */
@@ -450,19 +465,21 @@ fn transform_function(
     func
 }
 
-fn visit_expr(exp: &mut Expression, replace_with:  &HashMap<&String, &String>) {
+fn visit_expr(exp: &mut Expression, replace_with: &HashMap<&String, &String>, scope: &str) {
     match exp {
         Variable(ident) => {
             if let Some(replace_with) = replace_with.get(&ident.name) {
                 /* GOTEM! */
                 ident.name = (*replace_with).clone();
+            } else if !ident.name.eq("_") {
+                ident.name = format!("{}_{}", scope.clone(), ident.name.clone());
             }
-        },
+        }
         Expression::PostIncrement(_, expr) => {
-            visit_expr(expr, replace_with);
+            visit_expr(expr, replace_with, scope);
         }
         Expression::PostDecrement(_, expr) => {
-            visit_expr(expr, replace_with);
+            visit_expr(expr, replace_with, scope);
         }
         Expression::New(_, _) => {}
         Expression::ArraySubscript(_, _, _) => {}
@@ -471,7 +488,7 @@ fn visit_expr(exp: &mut Expression, replace_with:  &HashMap<&String, &String>) {
         Expression::MemberAccess(_, _, _) => {}
         Expression::FunctionCall(_, _, exprs) => {
             for expr in exprs {
-                visit_expr(expr, replace_with);
+                visit_expr(expr, replace_with, scope);
             }
         }
         Expression::FunctionCallBlock(_, _, _) => {}
@@ -497,8 +514,8 @@ fn visit_expr(exp: &mut Expression, replace_with:  &HashMap<&String, &String>) {
         Expression::Less(_, _, _) => {}
         Expression::More(_, _, _) => {}
         Expression::LessEqual(_, exp1, exp2) => {
-            visit_expr(exp1, replace_with);
-            visit_expr(exp2, replace_with);
+            visit_expr(exp1, replace_with, scope);
+            visit_expr(exp2, replace_with, scope);
         }
         Expression::MoreEqual(_, _, _) => {}
         Expression::Equal(_, _, _) => {}
